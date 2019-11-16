@@ -1,174 +1,164 @@
-/******************************************************************************
-*
-* Copyright (C) 2002 - 2019 Xilinx, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* XILINX  BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
-* OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-* SOFTWARE.
-*
-* Except as contained in this notice, the name of the Xilinx shall not be used
-* in advertising or otherwise to promote the sale, use or other dealings in
-* this Software without prior written authorization from Xilinx.
-*
-******************************************************************************/
-/*****************************************************************************/
-/**
-* @file xgpio_example.c
-*
-* This file contains a design example using the AXI GPIO driver (XGpio) and
-* hardware device.  It only uses channel 1 of a GPIO device and assumes that
-* the bit 0 of the GPIO is connected to the LED on the HW board.
-*
-*
-* <pre>
-* MODIFICATION HISTORY:
-*
-* Ver   Who  Date     Changes
-* ----- ---- -------- -----------------------------------------------
-* 1.00a rmm  03/13/02 First release
-* 1.00a rpm  08/04/03 Removed second example and invalid macro calls
-* 2.00a jhl  12/15/03 Added support for dual channels
-* 2.00a sv   04/20/05 Minor changes to comply to Doxygen and coding guidelines
-* 3.00a ktn  11/20/09 Minor changes as per coding guidelines.
-* 4.1   lks  11/18/15 Updated to use canonical xparameters and
-*		      clean up of the comments and code for CR 900381
-* 4.3   sk   09/29/16 Modified the example to make it work when LED_bits are
-*                     configured as an output. CR# 958644
-*       ms   01/23/17 Added xil_printf statement in main function to
-*                     ensure that "Successfully ran" and "Failed" strings
-*                     are available in all examples. This is a fix for
-*                     CR-965028.
-*
-* </pre>
-******************************************************************************/
 
-/***************************** Include Files *********************************/
+/*
+ * main.c
+ *
+ *  Created on: Aug 23, 2019
+ *      Author: dave
+ * Modified on: Nov 13, 2019
+ *      Author: Team 3
+ */
 
-#include "xparameters.h"
+//AXI GPIO driver
 #include "xgpio.h"
+//#include "sleep.h"
+//send data over UART
 #include "xil_printf.h"
 
-/************************** Constant Definitions *****************************/
+//information about AXI peripherals
+#include "xparameters.h"
+//#include "platform.h"
+#include "xsysmon.h"
+#define RX_BUFFER_SIZE 4 // defines how many XADC channels are read
+#define xadc XPAR_SYSMON_0_DEVICE_ID
+XSysMon xadc_inst;
+int xsts;
 
-#define LED 0x01   /* Assumes bit 0 of GPIO is connected to an LED  */
-
-/*
- * The following constants map to the XPAR parameters created in the
- * xparameters.h file. They are defined here such that a user can easily
- * change all the needed parameters in one place.
- */
-#define GPIO_EXAMPLE_DEVICE_ID  XPAR_GPIO_0_DEVICE_ID
-
-/*
- * The following constant is used to wait after an LED is turned on to make
- * sure that it is visible to the human eye.  This constant might need to be
- * tuned for faster or slower processor speeds.
- */
-#define LED_DELAY     10000000
-
-/*
- * The following constant is used to determine which channel of the GPIO is
- * used for the LED if there are 2 channels supported.
- */
-#define LED_CHANNEL 1
-
-/**************************** Type Definitions *******************************/
-
-
-/***************** Macros (Inline Functions) Definitions *********************/
-
-#ifdef PRE_2_00A_APPLICATION
-
-/*
- * The following macros are provided to allow an application to compile that
- * uses an older version of the driver (pre 2.00a) which did not have a channel
- * parameter. Note that the channel parameter is fixed as channel 1.
- */
-#define XGpio_SetDataDirection(InstancePtr, DirectionMask) \
-        XGpio_SetDataDirection(InstancePtr, LED_CHANNEL, DirectionMask)
-
-#define XGpio_DiscreteRead(InstancePtr) \
-        XGpio_DiscreteRead(InstancePtr, LED_CHANNEL)
-
-#define XGpio_DiscreteWrite(InstancePtr, Mask) \
-        XGpio_DiscreteWrite(InstancePtr, LED_CHANNEL, Mask)
-
-#define XGpio_DiscreteSet(InstancePtr, Mask) \
-        XGpio_DiscreteSet(InstancePtr, LED_CHANNEL, Mask)
-
-#endif
-
-/************************** Function Prototypes ******************************/
-
-
-/************************** Variable Definitions *****************************/
-
-/*
- * The following are declared globally so they are zeroed and so they are
- * easily accessible from a debugger
- */
-
-XGpio Gpio; /* The Instance of the GPIO Driver */
-
-/*****************************************************************************/
-/**
-*
-* The purpose of this function is to illustrate how to use the GPIO
-* driver to turn on and off an LED.
-*
-* @param	None
-*
-* @return	XST_FAILURE to indicate that the GPIO Initialization had
-*		failed.
-*
-* @note		This function will not return if the test is running.
-*
-******************************************************************************/
-int main(void)
+//VAUX14 = temp.sensor, VAUX06 = PIS
+char *channel[] ={"VAUX14","VAUX07","VAUX15","VAUX06"}; //for RawData printf
+int sample[4] = {XSM_CH_AUX_MIN + 14,XSM_CH_AUX_MIN + 7,XSM_CH_AUX_MIN + 15,XSM_CH_AUX_MIN + 6};
+//sample array used to specify channel when reading ADC data into XADC_Buf
+u32 toBCD(u32 x) {
+	//converts a number to bcd so it can be displayed on the basys 3
+	//if the number is printed in hexadecimal it should look the same as the original decimal input
+	return x<10 ? x : (x%10)+16*toBCD(x/10);
+}
+int main()
 {
-	int Status;
-	volatile int Delay;
+	XGpio gpio;
+	XGpio gpio1;
+	XGpio gpio2;
+	XGpio gpio3;
+	XGpio gpio4;
+	u32 btn, led;
+	u32 sw;
+	u32 jbin, digin, rpiin;
+	u32 jcout;
+	u32 input_from_rpi;
+	u32 output;
+    
+	XGpio_Initialize(&gpio, 0); //buttons and leds
+	XGpio_Initialize(&gpio1, 1); //switches
+	XGpio_Initialize(&gpio2, 2); //JB connector
+	XGpio_Initialize(&gpio3, 3); //JC connector
+	XGpio_Initialize(&gpio4, 4); //Seven Segment Display
+	
+	XGpio_SetDataDirection(&gpio, 2, 0x00000000); // set led GPIO channel tristates to All Output
+	XGpio_SetDataDirection(&gpio, 1, 0xFFFFFFFF); // set BTN GPIO channel tristates to All Input
+	XGpio_SetDataDirection(&gpio1, 1, 0xFFFFFFFF); // set sw GPIO channel tristates to All Input
+	XGpio_SetDataDirection(&gpio2, 1, 0xFFFFFFFF); // set JB GPIO channel tristates to All Input
+	XGpio_SetDataDirection(&gpio3, 1, 0x00000000); // set JC GPIO channel tristates to All Output
+	XGpio_SetDataDirection(&gpio4, 1, 0x00000000); //set bcdout channel to ALL Outputs
+	int Index;
+	XSysMon *xadc_inst_ptr = &xadc_inst;
+	u32 XADC_Buf[RX_BUFFER_SIZE];
 
-	/* Initialize the GPIO driver */
-	Status = XGpio_Initialize(&Gpio, GPIO_EXAMPLE_DEVICE_ID);
-	if (Status != XST_SUCCESS) {
-		xil_printf("Gpio Initialization Failed\r\n");
-		return XST_FAILURE;
+
+	XSysMon_Config *xadc_config;
+
+//	init_platform();
+
+	xil_printf("XADC Example\n\r");
+
+	xadc_config = XSysMon_LookupConfig(xadc);
+	if (NULL == xadc_config){
+		xil_printf("XSysMon_LookupConfig failed\n");
 	}
 
-	/* Set the direction for all signals as inputs except the LED output */
-	XGpio_SetDataDirection(&Gpio, LED_CHANNEL, ~LED);
+	XSysMon_CfgInitialize(xadc_inst_ptr,xadc_config,xadc_config->BaseAddress);
 
-	/* Loop forever blinking the LED */
-
-	while (1) {
-		/* Set the LED to High */
-		XGpio_DiscreteWrite(&Gpio, LED_CHANNEL, LED);
-
-		/* Wait a small amount of time so the LED is visible */
-		for (Delay = 0; Delay < LED_DELAY; Delay++);
-
-		/* Clear the LED bit */
-		XGpio_DiscreteClear(&Gpio, LED_CHANNEL, LED);
-
-		/* Wait a small amount of time so the LED is visible */
-		for (Delay = 0; Delay < LED_DELAY; Delay++);
+	xsts=XSysMon_SelfTest(xadc_inst_ptr);
+	if (XST_SUCCESS != xsts){
+		xil_printf("ADC self test failed\n");
 	}
+	XSysMon_SetSequencerMode(xadc_inst_ptr,XSM_SEQ_MODE_SAFE);
+	XSysMon_SetAlarmEnables(xadc_inst_ptr, 0x00000000);
+	XSysMon_SetSequencerMode(xadc_inst_ptr,XSM_SEQ_MODE_SAFE);
+	XSysMon_SetAlarmEnables(xadc_inst_ptr, 0x0);
+	xsts = XSysMon_SetSeqChEnables(xadc_inst_ptr,
+				XSM_SEQ_CH_AUX14 |
+				XSM_SEQ_CH_AUX07 |
+				XSM_SEQ_CH_AUX15 |
+				XSM_SEQ_CH_AUX06);
+	if (XST_SUCCESS != xsts){
+			xil_printf("Failed to configure XSysMon_SetSeqChEnables\n");
+	}
+	xsts=XSysMon_SetSeqInputMode(xadc_inst_ptr,0);
+	if (XST_SUCCESS != xsts){
+		xil_printf("Failed to configure all XADC channels as unipolar\n");
+	}
+	XSysMon_SetSequencerMode(xadc_inst_ptr,XSM_SEQ_MODE_CONTINPASS);
 
-	xil_printf("Successfully ran Gpio Example\r\n");
-	return XST_SUCCESS;
+	while(1){
+ 		/*********PushButton, Switch, and Led Section*/
+		btn = XGpio_DiscreteRead(&gpio, 1);
+		sw  = XGpio_DiscreteRead(&gpio1,1);
+		jbin  = XGpio_DiscreteRead(&gpio2,1);
+		jcout = 1;//set to 0 for silence, 3 for high frequency buzzer
+		input_from_rpi = jbin&1; //input = 1, this = 1
+		digin = jbin & 0xF; //jb[3..0]
+		rpiin = (jbin & 0xF0)>>4; //jb[7..4];
+		
+		XGpio_DiscreteWrite(&gpio, 2, led);
+		XGpio_DiscreteWrite(&gpio3, 1, jcout);
+		XGpio_DiscreteWrite(&gpio2, 1, input_from_rpi); //input reading	
+		//xil_printf("\rbutton state: %08x\n",btn);
+		//xil_printf("\r jbin: %08x, digin: %08x, rpiin: %08x\n",jbin,digin,rpiin);
+		/******************end of section*************/
+
+		 /*****************************XADC section**************/
+		//getting the raw data 
+		XSysMon_GetStatus(xadc_inst_ptr); //Clear the old status
+		for (Index = 0;Index<RX_BUFFER_SIZE;Index++){
+			while((XSysMon_GetStatus(xadc_inst_ptr)& XSM_SR_EOS_MASK) != XSM_SR_EOS_MASK){
+				XADC_Buf[Index] = XSysMon_GetAdcData(xadc_inst_ptr,sample[Index]);
+			}
+		}
+		//at the point, the raw value of each vaux has been assigned.
+
+		//Output to Rpi, python script
+		//PIS = vaux06
+		int raw_pis = (int)(XADC_Buf[3]>>4);
+
+		//temperature sensor = vaux14
+		double raw_temp = (double)(XADC_Buf[0]>>4);
+		double temp_F = raw_temp*0.07984 - 10.0;
+		double temp_C = (temp_F - 32.0)/ 1.8;
+		int temp_F_in = (int)temp_F;
+		int temp_C_in = (int)temp_C;
+		
+		//1 = C, F = 0
+		//1 = user wants to see in C,
+		if (input_from_rpi == 1){
+		  output = temp_C_in;
+		}else{
+		  output = temp_F_in;
+		}
+		if(raw_pis == 4095){
+			XGpio_DiscreteWrite(&gpio4, 1, toBCD(output)); //displays temperature
+		}
+		else {
+			XGpio_DiscreteWrite(&gpio4, 1, 0xaaaa); //displays dashes
+		}
+
+		//print temp. sensor 
+		//xil_printf("Temp in F: %d \n",temp_F_in);
+		xil_printf("%d",temp_C_in);
+		xil_printf("   \n");
+
+		sleep(1);
+
+		/****************end of section*************/
+	} //end of while(1)
+
+	return 0;
 }
